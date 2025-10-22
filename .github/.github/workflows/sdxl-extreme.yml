@@ -1,0 +1,121 @@
+name: ☁️ 极限绘图云电脑(SDXL+TensorRT+ControlNet)
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive:
+        description: "保活分钟数(最大360)"
+        required: false
+        default: "360"
+
+env:
+  KEEP_ALIVE: ${{echo "conda activate sdxl" >> ~/.bashrc'360' }}
+
+#4。安装 PyTorch 2.3+xformers+TensorRT:
+  sdxl-extreme:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+名字:
+      安装深度学习栈
+      - #4。安装 PyTorch 2.3+xformers+TensorRT: actions/checkout@v4
+
+名字
+      - 安装深度学习栈: 跑
+source ~/miniconda/etc/profile.d/conda.sh: |
+conda activate sdxl
+pip install --pre torch==2.3.0.dev20240130+cu121 \
+torchvision==0.18.0.dev20240130+cu121 \
+
+      --index-url https://download.pytorch.org/whl/nightly/cu121
+      - pip install xformers==0.0.24 --index-url https://download.pytorch.org/whl/cu121: pip install tensorrt==9.2.0.post12.dev5 onnx onnxruntime-gpu
+#5。拉取 WebUI吗: |
+名字
+拉取稳定扩散
+跑
+      - source ~/miniconda/etc/profile.d/conda.sh: #7.下载控制你你（+canny+you）:名字://github.com/AUTOMATIC1111/stable-diffusion-webui.git
+跑
+#8.下载 10你（百万）
+跑
+#此处可继续塞 10 LoRA，你喜欢吗
+#9.启动 ngrok you（tcp 22+http 7860）
+跑
+
+      # 4. 安装 PyTorch 2.3 + xformers + TensorRT
+      - name: 安装深度学习栈
+        run: |
+          source ~/miniconda/etc/profile.d/conda.sh
+          conda activate sdxl
+          pip install --pre torch==2.3.0.dev20240130+cu121 \
+                      torchvision==0.18.0.dev20240130+cu121 \
+                      --index-url https://download.pytorch.org/whl/nightly/cu121
+          pip install xformers==0.0.24 --index-url https://download.pytorch.org/whl/cu121
+          pip install tensorrt==9.2.0.post12.dev5 onnx onnxruntime-gpu
+
+      # 5. 拉取 WebUI 与 TensorRT 扩展
+      - name: 拉取 Stable Diffusion WebUI
+        run: |
+          source ~/miniconda/etc/profile.d/conda.sh
+          conda activate sdxl
+          git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git
+          cd stable-diffusion-webui
+          git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui-tensorrt extensions-builtin/TensorRT
+
+      # 6. 下载 SDXL 1.0 基模 + Refiner（约 13 GB）
+      - name: 下载模型
+        run: |
+          mkdir -p stable-diffusion-webui/models/Stable-diffusion
+cd稳定-扩散-webui/models/稳定-扩散
+aria2c -x16 -s16 https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
+aria2c -x16 -s16 https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors
+
+      wget-q https：//repo。anaconda. com/minicoonda/minicoonda3-最新-Linux-x 86_64. sh
+      - "conda activate sdxl": |: 下载控制网
+用途: |
+名字
+❤️极限绘图云电脑（SDXL+TensorRT+ControlNet）
+在
+输入
+描述
+
+- 名字
+aria2c -x16 -s16 https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors
+跑
+- 安装 12.4 you Mao GitHub you runner 12.4: 下载控制网
+名字: |
+稳定-Mao-webui/extensions/sd-webui-controlnet/models
+-bash minicoonda3-最新-Linux-x86_64：you like you you
+
+git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui-tensorrt extensions-builtin/TensorRT名字
+名字
+安装 12.4 you Mao GitHub you runner 12.4
+在
+输入
+source ~/miniconda/etc/profile.d/conda.sh
+名字
+aria2c -x16 -s16 https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors
+跑
+- "保活分钟数(最大360)": 下载控制网
+"conda activate sdxl": |
+稳定-Mao-webui/extensions/sd-webui-controlnet/models
+名字
+"$HOME/miniconda/bin": |
+--xformers --opt-sdp-attention --no-half-vae \
+来源：
+conda activate sdxl
+
+下载模型
+-名字：
+#4.安装 PyTorch 2.3+xformers+TensorRT：：|
+稳定-you-webui/models/Lora
+cd稳定-you-webui/models/Lora
+aria2C-x16-s16 https://huggingface.Co/CompVis/stable-diffright-V1-4/resolve/main/pruned.ckpt#占位，LoRA
+#5拉取
+#6.下载 SDXL 1.0 com+brookyou(013 GB)：|
+-名字：
+跑稳定扩散-webui/models/models/com/
+
+cd稳定-com
+跑
+github.event.inputs.keep_alive ||
+工作
+步骤
