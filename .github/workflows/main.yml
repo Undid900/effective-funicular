@@ -1,7 +1,7 @@
 name: Win-CloudPC
 
 on:
-  workflow_dispatch:          # 仅手动触发，防止被 push 误跑
+  workflow_dispatch:
     inputs:
       idle_minutes:
         description: '挂机多少分钟后自动关机(最大360)'
@@ -10,36 +10,39 @@ on:
 
 jobs:
   cloud:
-    runs-on: windows-latest   # 官方 Windows Server 2022
-    timeout-minutes: 360      # 6 小时上限
+    runs-on: windows-latest
+    timeout-minutes: 360
     steps:
-      - name:  Enable GUI & Remote Desktop
+      - name: 开启 RDP 并创建用户
         run: |
-          # 开启 RDP 并放通防火墙
+          # 1. 放行远程桌面
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          # 新建用户 github / 密码随机 12 位
-          $pwd = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 12 | % {[char]$_})
+          Enable-NetFirewallRule -DisplayGroup "远程桌面"
+          # 2. 新建管理员用户 github / 随机 12 位密码
+          $pwd = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | % {[char]$_})
           net user github $pwd /add
           net localgroup administrators github /add
-          # 把登录信息写进 GITHUB_STEP_SUMMARY，控制台可见
-          echo "✅ 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
-          echo "- 地址：$env:COMPUTERNAME.eastus.cloudapp.azure.com" >> $env:GITHUB_STEP_SUMMARY
-          echo "- 用户：github" >> $env:GITHUB_STEP_SUMMARY
+          # 3. 获取公网 IP（真正可连）
+          $ip = (Invoke-RestMethod ifconfig.me)
+          # 4. 输出连接信息
+          echo "✅ Windows 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
+          echo "- 公网 IP：$ip" >> $env:GITHUB_STEP_SUMMARY
+          echo "- 端口：3389" >> $env:GITHUB_STEP_SUMMARY
+          echo "- 用户名：github" >> $env:GITHUB_STEP_SUMMARY
           echo "- 密码：$pwd" >> $env:GITHUB_STEP_SUMMARY
-          # 同时打印到终端，方便调试
-          Write-Output "RDP 地址: $env:COMPUTERNAME.eastus.cloudapp.azure.com:3389"
-          Write-Output "用户名  : github"
-          Write-Output "密  码  : $pwd"
+          Write-Output "==========================="
+          Write-Output "RDP 连接地址：$ip:3389"
+          Write-Output "用户名：github"
+          Write-Output "密码：$pwd"
+          Write-Output "==========================="
 
-      - name: 安装常用软件 (Chrome + 7z + vscode)
+      - name: 安装常用软件
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force
           [System.Net.ServicePointManager]::SecurityProtocol = 3072
-          # 装 Chocolatey
           iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-          # 装软件
-          choco install googlechrome 7zip vscode -y
+          choco install 7zip vscode -y
+          choco install googlechrome -y --ignore-checksums --force --no-progress || Write-Output "Chrome 安装失败，已跳过"
 
       - name: 挂机保持存活
         run: |
