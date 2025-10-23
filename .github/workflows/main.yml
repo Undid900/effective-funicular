@@ -15,9 +15,9 @@ jobs:
     steps:
       - name: 开启 RDP 并创建用户
         run: |
-          # 1. 放行远程桌面
+          # 1. 放行远程桌面（英文组名）
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-          Enable-NetFirewallRule -DisplayGroup "远程桌面"
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           # 2. 新建管理员用户 github / 随机 12 位密码
           $pwd = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | % {[char]$_})
           net user github $pwd /add
