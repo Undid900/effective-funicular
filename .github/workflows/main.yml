@@ -1,66 +1,49 @@
-name: Fooocus-CloudPC
+name: Win-CloudPC
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:   # 手动按钮
+  workflow_dispatch:          # 仅手动触发，防止被 push 误跑
+    inputs:
+      idle_minutes:
+        description: '挂机多少分钟后自动关机(最大360)'
+        required: false
+        default: '120'
 
 jobs:
-  draw:
-    runs-on: ubuntu-latest   # 官方免费云电脑
-    timeout-minutes: 45      # 防止跑死
-    permissions:
-      contents: write        # 允许 push 图片回仓库
-
+  cloud:
+    runs-on: windows-latest   # 官方 Windows Server 2022
+    timeout-minutes: 360      # 6 小时上限
     steps:
-      # 1. 拉代码
-      - uses: actions/checkout@v4
-
-      # 2. 装 conda（官方脚本最快）
-      - name: Install conda
+      - name:  Enable GUI & Remote Desktop
         run: |
-          wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniconda.sh
-          bash miniconda.sh -b -p $HOME/conda
-          echo "$HOME/conda/bin" >> $GITHUB_PATH
+          # 开启 RDP 并放通防火墙
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          # 新建用户 github / 密码随机 12 位
+          $pwd = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 12 | % {[char]$_})
+          net user github $pwd /add
+          net localgroup administrators github /add
+          # 把登录信息写进 GITHUB_STEP_SUMMARY，控制台可见
+          echo "✅ 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
+          echo "- 地址：$env:COMPUTERNAME.eastus.cloudapp.azure.com" >> $env:GITHUB_STEP_SUMMARY
+          echo "- 用户：github" >> $env:GITHUB_STEP_SUMMARY
+          echo "- 密码：$pwd" >> $env:GITHUB_STEP_SUMMARY
+          # 同时打印到终端，方便调试
+          Write-Output "RDP 地址: $env:COMPUTERNAME.eastus.cloudapp.azure.com:3389"
+          Write-Output "用户名  : github"
+          Write-Output "密  码  : $pwd"
 
-      # 3. 拉 Fooocus + 模型（缓存加速）
-      - name: Cache Fooocus
-        id: cache-fooocus
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/fooocus
-            ~/conda/envs/fooocus
-          key: ${{ runner.os }}-fooocus-v2
-
-      - name: Clone & setup Fooocus
-        if: steps.cache-fooocus.outputs.cache-hit != 'true'
+      - name: 安装常用软件 (Chrome + 7z + vscode)
         run: |
-          git clone https://github.com/lllyasviel/Fooocus.git ~/fooocus
-          cd ~/fooocus
-          conda env create -f environment.yaml -n fooocus
-          conda activate fooocus
-          python -m pip install -r requirements_versions.txt
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = 3072
+          # 装 Chocolatey
+          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+          # 装软件
+          choco install googlechrome 7zip vscode -y
 
-      # 4. 生成图片（无显卡，CPU 跑 512×512 约 5 分钟）
-      - name: Draw image
+      - name: 挂机保持存活
         run: |
-          source $HOME/conda/etc/profile.d/conda.sh
-          conda activate fooocus
-          cd ~/fooocus
-          python launch.py --prompt "a cute robot, colorful, high quality" \
-                           --output-path $GITHUB_WORKSPACE/output.png \
-                           --offload \
-                           --disable-offload-from-vram \
-                           --always-cpu
-
-      # 5. 把图传回仓库 output 分支
-      - name: Commit & push image
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan output || git checkout output
-          mv output.png drawing-${{ github.run_number }}.png
-          git add .
-          git commit -m "drawing ${{ github.run_number }}"
-          git push origin output --force
+          $idle = ${{ github.event.inputs.idle_minutes }}
+          Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
+          timeout /t ($idle * 60) /nobreak
+          Stop-Computer -Force
