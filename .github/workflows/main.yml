@@ -1,121 +1,66 @@
-name: ☁️ 极限绘图云电脑(SDXL+TensorRT+ControlNet)
+name: Fooocus-CloudPC
 
 on:
-  workflow_dispatch:
-    inputs:
-      keep_alive:
-        description: "保活分钟数(最大360)"
-        required: false
-        default: "360"
-
-env:
-  KEEP_ALIVE: ${{ github.event.inputs.keep_alive || '360' }}
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # 手动按钮
 
 jobs:
-  sdxl-extreme:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
+  draw:
+    runs-on: ubuntu-latest   # 官方免费云电脑
+    timeout-minutes: 45      # 防止跑死
+    permissions:
+      contents: write        # 允许 push 图片回仓库
+
     steps:
-      # 1. 检出仓库（占位）
+      # 1. 拉代码
       - uses: actions/checkout@v4
 
-      # 2. 安装 CUDA 12.4 驱动（GitHub 官方 runner 已带 12.4 运行时）
-      - name: 安装系统依赖
+      # 2. 装 conda（官方脚本最快）
+      - name: Install conda
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y wget git software-properties-common \
-            build-essential cuda-toolkit-12-4 aria2
+          wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniconda.sh
+          bash miniconda.sh -b -p $HOME/conda
+          echo "$HOME/conda/bin" >> $GITHUB_PATH
 
-      # 3. 安装 Miniconda + Python 3.10
-      - name: 安装 Miniconda
-        run: |
-          wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-          bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda
-          echo "$HOME/miniconda/bin" >> $GITHUB_PATH
-      - name: 创建 Python 3.10 环境
-        run: |
-          conda init bash
-          source ~/miniconda/etc/profile.d/conda.sh
-          conda create -n sdxl python=3.10 -y
-          conda activate sdxl
-          echo "conda activate sdxl" >> ~/.bashrc
+      # 3. 拉 Fooocus + 模型（缓存加速）
+      - name: Cache Fooocus
+        id: cache-fooocus
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/fooocus
+            ~/conda/envs/fooocus
+          key: ${{ runner.os }}-fooocus-v2
 
-      # 4. 安装 PyTorch 2.3 + xformers + TensorRT
-      - name: 安装深度学习栈
+      - name: Clone & setup Fooocus
+        if: steps.cache-fooocus.outputs.cache-hit != 'true'
         run: |
-          source ~/miniconda/etc/profile.d/conda.sh
-          conda activate sdxl
-          pip install --pre torch==2.3.0.dev20240130+cu121 \
-                      torchvision==0.18.0.dev20240130+cu121 \
-                      --index-url https://download.pytorch.org/whl/nightly/cu121
-          pip install xformers==0.0.24 --index-url https://download.pytorch.org/whl/cu121
-          pip install tensorrt==9.2.0.post12.dev5 onnx onnxruntime-gpu
+          git clone https://github.com/lllyasviel/Fooocus.git ~/fooocus
+          cd ~/fooocus
+          conda env create -f environment.yaml -n fooocus
+          conda activate fooocus
+          python -m pip install -r requirements_versions.txt
 
-      # 5. 拉取 WebUI 与 TensorRT 扩展
-      - name: 拉取 Stable Diffusion WebUI
+      # 4. 生成图片（无显卡，CPU 跑 512×512 约 5 分钟）
+      - name: Draw image
         run: |
-          source ~/miniconda/etc/profile.d/conda.sh
-          conda activate sdxl
-          git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git
-          cd stable-diffusion-webui
-          git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui-tensorrt extensions-builtin/TensorRT
+          source $HOME/conda/etc/profile.d/conda.sh
+          conda activate fooocus
+          cd ~/fooocus
+          python launch.py --prompt "a cute robot, colorful, high quality" \
+                           --output-path $GITHUB_WORKSPACE/output.png \
+                           --offload \
+                           --disable-offload-from-vram \
+                           --always-cpu
 
-      # 6. 下载 SDXL 1.0 基模 + Refiner（约 13 GB）
-      - name: 下载模型
+      # 5. 把图传回仓库 output 分支
+      - name: Commit & push image
         run: |
-          mkdir -p stable-diffusion-webui/models/Stable-diffusion
-          cd stable-diffusion-webui/models/Stable-diffusion
-          aria2c -x16 -s16 https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
-          aria2c -x16 -s16 https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors
-
-      # 7. 下载 ControlNet 模型（depth+canny+tile）
-      - name: 下载 ControlNet 模型
-        run: |
-          mkdir -p stable-diffusion-webui/extensions/sd-webui-controlnet/models
-          cd stable-diffusion-webui/extensions/sd-webui-controlnet/models
-          aria2c -x16 -s16 https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11f1e_sd15_tile.pth
-          aria2c -x16 -s16 https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_canny.pth
-          aria2c -x16 -s16 https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11f1e_sd15_depth.pth
-
-      # 8. 下载 10 个热门 LoRA（示例）
-      - name: 下载 LoRA
-        run: |
-          mkdir -p stable-diffusion-webui/models/Lora
-          cd stable-diffusion-webui/models/Lora
-          aria2c -x16 -s16 https://huggingface.co/CompVis/stable-diffusion-v1-4/resolve/main/pruned.ckpt  # 占位，替换成真实 LoRA 直链
-          # 此处可继续塞 10 个 LoRA，直链即可
-
-      # 9. 启动 ngrok 隧道（tcp 22 + http 7860）
-      - name: 启动 ngrok
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-        run: |
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar xf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken "$NGROK_TOKEN"
-          ./ngrok tcp 22 --log=stdout > ngrok.log &
-          ./ngrok http 7860 --log=stdout > ngrok2.log &
-          sleep 5
-          SSH_HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[] | select(.public_url | contains("tcp")) | .public_url' | sed 's/tcp:\/\///')
-          WEB_URL=$(curl -s http://127.0.0.1:4041/api/tunnels | jq -r '.tunnels[0].public_url')
-          echo "======= 连接方式 =======" >> $GITHUB_STEP_SUMMARY
-          echo "**SSH**: \`ssh $(echo $SSH_HOST | cut -d: -f1) -p $(echo $SSH_HOST | cut -d: -f2)\`" >> $GITHUB_STEP_SUMMARY
-          echo "**WebUI**: $WEB_URL" >> $GITHUB_STEP_SUMMARY
-          echo "=======================" >> $GITHUB_STEP_SUMMARY
-
-      # 10. 启动 WebUI（带 TensorRT 加速参数）
-      - name: 启动 Stable Diffusion WebUI
-        run: |
-          source ~/miniconda/etc/profile.d/conda.sh
-          conda activate sdxl
-          cd stable-diffusion-webui
-          nohup python launch.py \
-            --xformers --opt-sdp-attention --no-half-vae \
-            --tensorrt --medvram-sdxl --api --listen --port 7860 \
-            --enable-insecure-extension-access > webui.log 2>&1 &
-
-      # 11. 保活到指定时间
-      - name: 保活
-        run: |
-          sudo shutdown -P +${KEEP_ALIVE}
-          sleep ${KEEP_ALIVE}m
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan output || git checkout output
+          mv output.png drawing-${{ github.run_number }}.png
+          git add .
+          git commit -m "drawing ${{ github.run_number }}"
+          git push origin output --force
