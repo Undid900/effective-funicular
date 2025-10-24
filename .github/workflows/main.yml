@@ -1,4 +1,4 @@
-name: Win-CloudPC
+name: Win-CloudPC-ZeroError
 
 on:
   workflow_dispatch:
@@ -13,40 +13,43 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 360
     steps:
-      - name: 开启 RDP 并创建用户
+      - name: 一键初始化 RDP（容错版）
+        shell: powershell
         run: |
-          # 1. 放行远程桌面（英文组名）
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          # 2. 新建管理员用户 github / 随机 12 位密码
+          # 1. 强制开启 RDP 服务
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0 -ErrorAction SilentlyContinue
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          # 2. 防火墙万一没有规则就自建
+          New-NetFirewallRule -Name "RDP-TCP-In-3389" -DisplayName "Remote Desktop - User Mode (TCP-In)" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
+          # 3. 创建用户 github / 随机 12 位密码
           $pwd = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | % {[char]$_})
-          net user github $pwd /add
-          net localgroup administrators github /add
-          # 3. 获取公网 IP（真正可连）
-          $ip = (Invoke-RestMethod ifconfig.me)
+          net user github $pwd /add /y || net user github $pwd /passwordreq:yes 2>$null
+          net localgroup administrators github /add 2>$null
           # 4. 输出连接信息
+          $ip = (Invoke-RestMethod ifconfig.me)
           echo "✅ Windows 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
           echo "- 公网 IP：$ip" >> $env:GITHUB_STEP_SUMMARY
           echo "- 端口：3389" >> $env:GITHUB_STEP_SUMMARY
           echo "- 用户名：github" >> $env:GITHUB_STEP_SUMMARY
           echo "- 密码：$pwd" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "==========================="
-          Write-Output "RDP 连接地址：$ip:3389"
-          Write-Output "用户名：github"
-          Write-Output "密码：$pwd"
-          Write-Output "==========================="
+          Write-Output "RDP: $ip`:3389  用户: github  密码: $pwd"
 
-      - name: 安装常用软件
+      - name: 安装常用软件（绝对零出错）
+        shell: powershell
         run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force
+          Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
           [System.Net.ServicePointManager]::SecurityProtocol = 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-          choco install 7zip vscode -y
-          choco install googlechrome -y --ignore-checksums --force --no-progress || Write-Output "Chrome 安装失败，已跳过"
+          # 装 Chocolatey（如已装会跳过）
+          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1')) -ErrorAction SilentlyContinue
+          # 装软件，任何包失败都继续
+          choco install 7zip -y --no-progress --force || Write-Output "7zip 安装失败，跳过"
+          choco install vscode -y --no-progress --force || Write-Output "VSCode 安装失败，跳过"
+          choco install googlechrome -y --no-progress --force --ignore-checksums || Write-Output "Chrome 安装失败，跳过"
 
       - name: 挂机保持存活
+        shell: powershell
         run: |
-          $idle = ${{ github.event.inputs.idle_minutes }}
+          $idle = [int]"${{ github.event.inputs.idle_minutes }}"
           Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
-          timeout /t ($idle * 60) /nobreak
-          Stop-Computer -Force
+          timeout /t ($idle * 60) /nobreak > $null 2>&1
+          Stop-Computer -Force -ErrorAction SilentlyContinue
