@@ -23,8 +23,8 @@ jobs:
           New-NetFirewallRule -Name "RDP-TCP-In-3389" -DisplayName "Remote Desktop - User Mode (TCP-In)" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
           # 3. 创建用户 github / 随机 12 位密码
           $pwd = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | % {[char]$_})
-          net user github $pwd /add /y || net user github $pwd /passwordreq:yes 2>$null
-          net localgroup administrators github /add 2>$null
+          net user github $pwd /add /y
+          net localgroup administrators github /add
           # 4. 输出连接信息
           $ip = (Invoke-RestMethod ifconfig.me)
           echo "✅ Windows 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
@@ -39,17 +39,13 @@ jobs:
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
           [System.Net.ServicePointManager]::SecurityProtocol = 3072
-          # 装 Chocolatey（如已装会跳过）
           iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1')) -ErrorAction SilentlyContinue
-          # 装软件，任何包失败都继续
-          choco install 7zip -y --no-progress --force || Write-Output "7zip 安装失败，跳过"
-          choco install vscode -y --no-progress --force || Write-Output "VSCode 安装失败，跳过"
-          choco install googlechrome -y --no-progress --force --ignore-checksums || Write-Output "Chrome 安装失败，跳过"
+          choco install 7zip vscode googlechrome -y --no-progress --force --ignore-checksums || Write-Output "部分软件安装失败，已跳过"
 
       - name: 挂机保持存活
         shell: powershell
         run: |
           $idle = [int]"${{ github.event.inputs.idle_minutes }}"
           Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
-          timeout /t ($idle * 60) /nobreak > $null 2>&1
+          timeout /t ($idle * 60) /nobreak >$null 2>&1
           Stop-Computer -Force -ErrorAction SilentlyContinue
