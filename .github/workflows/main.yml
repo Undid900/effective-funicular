@@ -1,51 +1,76 @@
-name: Win-CloudPC-ZeroError
-
+name: 学习用Android 10 图形化环境
 on:
-  workflow_dispatch:
-    inputs:
-      idle_minutes:
-        description: '挂机多少分钟后自动关机(最大360)'
-        required: false
-        default: '120'
+  workflow_dispatch:  # 手动触发，避免浪费额度
 
 jobs:
-  cloud:
-    runs-on: windows-latest
-    timeout-minutes: 360
+  android10-gui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 控制运行时长（Ubuntu每分钟消耗1个免费额度）
     steps:
-      - name: 一键初始化 RDP（容错版）
-        shell: powershell
+      - name: 安装基础依赖（VNC+图形驱动）
         run: |
-          # 1. 强制开启 RDP 服务
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0 -ErrorAction SilentlyContinue
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          # 2. 防火墙万一没有规则就自建
-          New-NetFirewallRule -Name "RDP-TCP-In-3389" -DisplayName "Remote Desktop - User Mode (TCP-In)" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
-          # 3. 创建用户 github / 随机 12 位密码
-          $pwd = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | % {[char]$_})
-          net user github $pwd /add /y
-          net localgroup administrators github /add
-          # 4. 输出连接信息
-          $ip = (Invoke-RestMethod ifconfig.me)
-          echo "✅ Windows 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
-          echo "- 公网 IP：$ip" >> $env:GITHUB_STEP_SUMMARY
-          echo "- 端口：3389" >> $env:GITHUB_STEP_SUMMARY
-          echo "- 用户名：github" >> $env:GITHUB_STEP_SUMMARY
-          echo "- 密码：$pwd" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "RDP: $ip`:3389  用户: github  密码: $pwd"
+          # 安装VNC服务器、图形依赖及工具
+          sudo apt-get update && sudo apt-get install -y \
+            tightvncserver xvfb libgl1-mesa-glx libnss3 libxss1 libasound2 \
+            openjdk-17-jdk wget unzip adb
+          # 启动Xvfb虚拟桌面（模拟图形显示，分辨率1280x720）
+          Xvfb :99 -screen 0 1280x720x24 &
+          export DISPLAY=:99  # 告知系统使用虚拟桌面
 
-      - name: 安装常用软件（绝对零出错）
-        shell: powershell
+      - name: 安装Android 10 SDK及模拟器
         run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
-          [System.Net.ServicePointManager]::SecurityProtocol = 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1')) -ErrorAction SilentlyContinue
-          choco install 7zip vscode googlechrome -y --no-progress --force --ignore-checksums || Write-Output "部分软件安装失败，已跳过"
+          # 下载Android Command Line Tools
+          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip cmdline-tools.zip -d $HOME/android-sdk
+          # 配置SDK环境变量
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator" >> $GITHUB_ENV
+          # 静默接受SDK许可协议
+          yes | sdkmanager --licenses
+          # 安装Android 10核心组件（API 29对应Android 10）
+          sdkmanager "platforms;android-29" "build-tools;29.0.3" "emulator" \
+            "system-images;android-29;google_apis;x86_64"  # x86_64镜像支持图形加速
 
-      - name: 挂机保持存活
-        shell: powershell
+      - name: 创建并启动Android 10图形化模拟器
         run: |
-          $idle = [int]"${{ github.event.inputs.idle_minutes }}"
-          Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
-          timeout /t ($idle * 60) /nobreak >$null 2>&1
-          Stop-Computer -Force -ErrorAction SilentlyContinue
+          # 创建模拟器（名称Android10-GUI，基于Pixel 5设备模板）
+          avdmanager create avd -n Android10-GUI -k "system-images;android-29;google_apis;x86_64" \
+            -d "pixel_5" --abi google_apis/x86_64 --force
+          # 启动模拟器（带图形界面，启用硬件加速）
+          emulator -avd Android10-GUI -no-audio -no-boot-anim -gpu auto &
+          # 等待模拟器完全启动（检测系统启动完成标志）
+          adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 3; done'
+          sleep 10  # 额外等待图形界面加载
+          echo "Android 10图形化模拟器启动成功！"
+
+      - name: 配置VNC（方便远程查看图形界面）
+        run: |
+          # 设置VNC密码（学习用默认123456，建议通过GitHub Secrets存储）
+          echo "123456" | vncpasswd -f > $HOME/.vnc/passwd
+          chmod 600 $HOME/.vnc/passwd
+          # 启动VNC服务器，绑定虚拟桌面
+          tightvncserver :99 -geometry 1280x720 -depth 24
+          echo "VNC服务启动成功，连接地址：localhost:5900（需端口转发）"
+
+      - name: 图形化操作演示（可自定义）
+        run: |
+          # 示例1：安装可视化测试APK（替换为学习用APK地址）
+          wget https://example.com/visual-test.apk -O test.apk
+          adb install test.apk
+          # 示例2：启动应用并截图（验证图形界面可用）
+          adb shell am start -n com.example.visual/.MainActivity
+          sleep 5
+          adb exec-out screencap -p > screen.png  # 保存截图到工作目录
+          # 示例3：查看模拟器窗口（通过VNC可直观看到）
+          echo "截图已保存，可在GitHub Actions artifacts中下载查看"
+
+      - name: 保持环境运行（供学习调试）
+        run: |
+          echo "图形化环境保持运行中，可通过VNC连接调试（持续10分钟）"
+          sleep 600
+
+      - name: 上传截图（验证图形化效果）
+        uses: actions/upload-artifact@v4
+        with:
+          name: android10-screenshot
+          path: screen.png
