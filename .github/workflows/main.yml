@@ -48,10 +48,14 @@ jobs:
           try { choco install vscode   -y --no-progress --force --ignore-checksums } catch { Write-Output "VSCode 安装失败，已跳过" }
           try { choco install googlechrome -y --no-progress --force --ignore-checksums } catch { Write-Output "Chrome 安装失败，已跳过" }
 
-      - name: 挂机保持存活
+      - name: 挂机保持存活（PowerShell 原生睡眠）
         shell: powershell
         run: |
           $idle = [int]"${{ github.event.inputs.idle_minutes }}"
           Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
-          timeout /t ($idle * 60) /nobreak >$null 2>&1
+          # 每分钟输出一次心跳，避免 Actions 误判离线
+          for ($i = 1; $i -le $idle; $i++) {
+              Start-Sleep -Seconds 60
+              Write-Output "第 $i / $idle 分钟"
+          }
           Stop-Computer -Force -ErrorAction SilentlyContinue
