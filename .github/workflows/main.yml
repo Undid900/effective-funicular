@@ -24,12 +24,27 @@ jobs:
               net user github $pwd /add /y
               net localgroup administrators github /add
               $ip = (Invoke-RestMethod ifconfig.me)
+              # 写入摘要
               echo "✅ Windows 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
               echo "- 公网 IP：$ip" >> $env:GITHUB_STEP_SUMMARY
               echo "- 端口：3389" >> $env:GITHUB_STEP_SUMMARY
               echo "- 用户名：github" >> $env:GITHUB_STEP_SUMMARY
               echo "- 密码：$pwd" >> $env:GITHUB_STEP_SUMMARY
+              # 生成 .rdp 文件
+              $rdpContent = @"
+full address:s:$ip`:3389
+username:s:github
+screen mode id:i:2
+desktopwidth:i:1280
+desktopheight:i:720
+"@
+              $rdpPath = "$env:USERPROFILE\Desktop\GitHub-WinCloud.rdp"
+              $rdpContent | Out-File -FilePath $rdpPath -Encoding ASCII
+              Write-Output "RDP 文件已生成：$rdpPath"
               Write-Output "RDP: $ip`:3389  用户: github  密码: $pwd"
+              # 保存变量供后续步骤
+              echo "IP=$ip" >> $env:GITHUB_ENV
+              echo "PWD=$pwd" >> $env:GITHUB_ENV
           } catch {
               Write-Output "初始化警告：$($_.Exception.Message)"
           }
@@ -48,12 +63,41 @@ jobs:
           try { choco install vscode   -y --no-progress --force --ignore-checksums } catch { Write-Output "VSCode 安装失败，已跳过" }
           try { choco install googlechrome -y --no-progress --force --ignore-checksums } catch { Write-Output "Chrome 安装失败，已跳过" }
 
+      - name: 生成 QR 码（快速连接）
+        shell: powershell
+        run: |
+          # 安装 QR 模块（如已装会跳过）
+          try { Install-Module -Name QRCodeGenerator -Force -Scope CurrentUser } catch { }
+          Import-Module QRCodeGenerator -ErrorAction SilentlyContinue
+          $qrText = "IP:$env:IP`:3389`nUser:github`nPwd:$env:PWD"
+          $qrPath = "$env:USERPROFILE\Desktop\Connect-WinCloud.png"
+          try {
+              New-QRCode -Text $qrText -OutPath $qrPath -Width 300
+              Write-Output "QR 码已生成：$qrPath"
+          } catch {
+              Write-Output "QR 模块异常，可手动输入连接信息"
+          }
+
+      - name: 打包连接文件
+        shell: powershell
+        run: |
+          $zip = "$env:USERPROFILE\Desktop\WinCloud-Connect.zip"
+          Compress-Archive -Path "$env:USERPROFILE\Desktop\*.rdp","$env:USERPROFILE\Desktop\*.png" -DestinationPath $zip -Force
+          echo "连接包已生成：$zip"
+          # 上传用路径写入环境变量
+          echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: 上传连接文件（RDP + QR）
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinCloud-Connect
+          path: ${{ env.ZIP }}
+
       - name: 挂机保持存活（PowerShell 原生睡眠）
         shell: powershell
         run: |
           $idle = [int]"${{ github.event.inputs.idle_minutes }}"
           Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
-          # 每分钟输出一次心跳，避免 Actions 误判离线
           for ($i = 1; $i -le $idle; $i++) {
               Start-Sleep -Seconds 60
               Write-Output "第 $i / $idle 分钟"
