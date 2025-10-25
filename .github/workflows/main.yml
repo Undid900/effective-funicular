@@ -1,105 +1,76 @@
-name: Win-CloudPC-ZeroError
+name: Windows Cloud PC (RDP + ngrok)
 
 on:
-  workflow_dispatch:
-    inputs:
-      idle_minutes:
-        description: '挂机多少分钟后自动关机(最大360)'
-        required: false
-        default: '120'
+  workflow_dispatch:          # 手动触发
+  # push:                     # 如需要 push 触发，可取消注释
+  #   branches: [ main ]
+
+env:
+  USERNAME: actions           # 登录账号
+  PASSWORD: Actions@2025      # 登录密码（建议改成自己的）
+  NGROK_REGION: us            # ngrok 区域，可选 us / eu / ap 等
 
 jobs:
   cloud:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 120      # 最大 2 h（GitHub 限制）
     steps:
-      - name: 一键初始化 RDP（零报错版）
-        shell: powershell
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable RDP & create user
         run: |
-          try {
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0 -ErrorAction Stop
-              Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-              New-NetFirewallRule -Name "RDP-TCP-In-3389" -DisplayName "Remote Desktop - User Mode (TCP-In)" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
-              $pwd = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | % {[char]$_})
-              net user github $pwd /add /y
-              net localgroup administrators github /add
-              $ip = (Invoke-RestMethod ifconfig.me)
-              # 写入摘要
-              echo "✅ Windows 云电脑已就绪" >> $env:GITHUB_STEP_SUMMARY
-              echo "- 公网 IP：$ip" >> $env:GITHUB_STEP_SUMMARY
-              echo "- 端口：3389" >> $env:GITHUB_STEP_SUMMARY
-              echo "- 用户名：github" >> $env:GITHUB_STEP_SUMMARY
-              echo "- 密码：$pwd" >> $env:GITHUB_STEP_SUMMARY
-              # 生成 .rdp 文件
-              $rdpContent = @"
-full address:s:$ip`:3389
-username:s:github
-screen mode id:i:2
-desktopwidth:i:1280
-desktopheight:i:720
-"@
-              $rdpPath = "$env:USERPROFILE\Desktop\GitHub-WinCloud.rdp"
-              $rdpContent | Out-File -FilePath $rdpPath -Encoding ASCII
-              Write-Output "RDP 文件已生成：$rdpPath"
-              Write-Output "RDP: $ip`:3389  用户: github  密码: $pwd"
-              # 保存变量供后续步骤
-              echo "IP=$ip" >> $env:GITHUB_ENV
-              echo "PWD=$pwd" >> $env:GITHUB_ENV
-          } catch {
-              Write-Output "初始化警告：$($_.Exception.Message)"
+          # 创建本地账户
+          net user ${{ env.USERNAME }} ${{ env.PASSWORD }} /add /y
+          net localgroup "Administrators" ${{ env.USERNAME }} /add
+          net localgroup "Remote Desktop Users" ${{ env.USERNAME }} /add
+
+          # 启用远程桌面
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          netsh advfirewall set allprofiles state off   # 完全关闭防火墙，省得端口被拦
+
+          # 高性能电源方案，防止息屏
+          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          powercfg -change -monitor-timeout-ac 0
+          powercfg -change -standby-timeout-ac 0
+
+      - name: Install ngrok
+        run: |
+          Invoke-WebRequest -Uri https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath .
+          ./ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+
+      - name: Start ngrok tunnel (3389)
+        run: |
+          # 后台挂起 ngrok，把 3389 映射出去
+          Start-Process -NoNewWindow -FilePath "./ngrok" -ArgumentList "tcp 3389 --region=${{ env.NGROK_REGION }} --log=stdout"
+
+      - name: Wait 10 s 并打印连接信息
+        run: |
+          Start-Sleep -Seconds 10
+          $tunnel = (Invoke-WebRequest -Uri http://localhost:4040/api/tunnels).Content | ConvertFrom-Json
+          $hostPort = $tunnel.tunnels[0].public_url -replace "tcp://"
+          Write-Host "============================"
+          Write-Host "远程桌面地址：$hostPort"
+          Write-Host "用户名：${{ env.USERNAME }}"
+          Write-Host "密码  ：${{ env.PASSWORD }}"
+          Write-Host "============================"
+
+      - name: Keep alive (最多 120 min)
+        timeout-minutes: 115
+        run: |
+          # 每 30 s 打印一次心跳，防止 Actions 被判定掉线
+          for ($i=1; $i -le 230; $i++) {
+            Write-Host "[$(Get-Date -Format HH:mm:ss)] 远程桌面仍在运行，剩余 $((120-$i*0.5)) min …"
+            Start-Sleep -Seconds 30
           }
 
-      - name: 安装常用软件（逐条容错）
-        shell: powershell
+      - name: Logoff & cleanup
+        if: always()
         run: |
-          try {
-              Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
-              [System.Net.ServicePointManager]::SecurityProtocol = 3072
-              iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1')) -ErrorAction SilentlyContinue
-          } catch {
-              Write-Output "Chocolatey 已存在或安装失败，继续"
-          }
-          try { choco install 7zip     -y --no-progress --force --ignore-checksums } catch { Write-Output "7zip 安装失败，已跳过" }
-          try { choco install vscode   -y --no-progress --force --ignore-checksums } catch { Write-Output "VSCode 安装失败，已跳过" }
-          try { choco install googlechrome -y --no-progress --force --ignore-checksums } catch { Write-Output "Chrome 安装失败，已跳过" }
+          # 强制注销所有远程会话，关闭 ngrok
+          qwinsta | ForEach-Object { $id = ($_ -split "\s+")[2]; if ($id -match "\d") { rwinsta $id } }
+          taskkill /f /im ngrok.exe 2>$null || true
 
-      - name: 生成 QR 码（快速连接）
-        shell: powershell
-        run: |
-          # 安装 QR 模块（如已装会跳过）
-          try { Install-Module -Name QRCodeGenerator -Force -Scope CurrentUser } catch { }
-          Import-Module QRCodeGenerator -ErrorAction SilentlyContinue
-          $qrText = "IP:$env:IP`:3389`nUser:github`nPwd:$env:PWD"
-          $qrPath = "$env:USERPROFILE\Desktop\Connect-WinCloud.png"
-          try {
-              New-QRCode -Text $qrText -OutPath $qrPath -Width 300
-              Write-Output "QR 码已生成：$qrPath"
-          } catch {
-              Write-Output "QR 模块异常，可手动输入连接信息"
-          }
-
-      - name: 打包连接文件
-        shell: powershell
-        run: |
-          $zip = "$env:USERPROFILE\Desktop\WinCloud-Connect.zip"
-          Compress-Archive -Path "$env:USERPROFILE\Desktop\*.rdp","$env:USERPROFILE\Desktop\*.png" -DestinationPath $zip -Force
-          echo "连接包已生成：$zip"
-          # 上传用路径写入环境变量
-          echo "ZIP=$zip" >> $env:GITHUB_ENV
-
-      - name: 上传连接文件（RDP + QR）
-        uses: actions/upload-artifact@v4
-        with:
-          name: WinCloud-Connect
-          path: ${{ env.ZIP }}
-
-      - name: 挂机保持存活（PowerShell 原生睡眠）
-        shell: powershell
-        run: |
-          $idle = [int]"${{ github.event.inputs.idle_minutes }}"
-          Write-Output "========== 开始挂机，$idle 分钟后自动关机 =========="
-          for ($i = 1; $i -le $idle; $i++) {
-              Start-Sleep -Seconds 60
-              Write-Output "第 $i / $idle 分钟"
-          }
-          Stop-Computer -Force -ErrorAction SilentlyContinue
