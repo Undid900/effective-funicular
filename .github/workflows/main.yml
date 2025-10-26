@@ -1,56 +1,75 @@
-name: 优化版Windows临时RDP
-on: 
-  workflow_dispatch: # 仅手动触发（更安全）
-    inputs:
-      rdp_duration:
-        description: "会话维持时长（分钟，最大300，避免超6小时限制）"
-        required: true
-        default: "120" # 默认2小时，可手动调整
+name: Windows Cloud PC (RDP + ngrok)
+
+on:
+  workflow_dispatch:          # 手动触发
+  # push:                     # 如需要 push 触发，可取消注释
+  #   branches: [ main ]
+
+env:
+  USERNAME: actions           # 登录账号
+  PASSWORD: Actions@2025      # 登录密码（建议改成自己的）
+  NGROK_REGION: us            # ngrok 区域，可选 us / eu / ap 等
 
 jobs:
-  windows-rdp:
+  cloud:
     runs-on: windows-latest
-    timeout-minutes: ${{ github.event.inputs.rdp_duration }} # 会话时长跟随输入值
+    timeout-minutes: 120      # 最大 2 h（GitHub 限制）
     steps:
-      - name: 1. 安装基础工具+常用软件（浏览器/编辑器）
-        run: |
-          # 安装Choco包管理器（Windows常用）
-          Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          # 自动安装：Chrome浏览器、VS Code、7-Zip
-          choco install googlechrome vscode 7zip -y --no-progress
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: 2. 开启RDP服务+防火墙配置
+      - name: Enable RDP & create user
         run: |
-          # 开启RDP（注册表修改）
-          reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-          # 开放3389端口
-          netsh advfirewall firewall add rule name="RDP-3389" dir=in action=allow protocol=TCP localport=3389 remoteip=any profile=any enable=yes
-          # 启动远程桌面服务
-          sc config TermService start= auto
-          sc start TermService
+          # 创建本地账户
+          net user ${{ env.USERNAME }} ${{ env.PASSWORD }} /add /y
+          net localgroup "Administrators" ${{ env.USERNAME }} /add
+          net localgroup "Remote Desktop Users" ${{ env.USERNAME }} /add
 
-      - name: 3. 设置管理员密码（从Secrets读取）
-        env:
-          ADMIN_PWD: ${{ secrets.WINDOWS_RDP_PWD }} # 需提前在仓库Secrets添加
-        run: |
-          net user administrator $env:ADMIN_PWD /active:yes
-          net localgroup administrators administrator /add
+          # 启用远程桌面
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          netsh advfirewall set allprofiles state off   # 完全关闭防火墙，省得端口被拦
 
-      - name: 4. 显示远程连接信息
-        run: |
-          $ip = (Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content
-          Write-Host "`n=================== 远程连接信息 ===================" -ForegroundColor Green
-          Write-Host "📌 远程IP：$ip" -ForegroundColor Cyan
-          Write-Host "👤 用户名：administrator" -ForegroundColor Cyan
-          Write-Host "🔑 密码：（你设置的 WINDOWS_RDP_PWD）" -ForegroundColor Cyan
-          Write-Host "⏱️  有效期：${{ github.event.inputs.rdp_duration }} 分钟" -ForegroundColor Cyan
-          Write-Host "====================================================`n" -ForegroundColor Green
+          # 高性能电源方案，防止息屏
+          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          powercfg -change -monitor-timeout-ac 0
+          powercfg -change -standby-timeout-ac 0
 
-      - name: 5. 维持会话
+      - name: Install ngrok
         run: |
-          $endTime = (Get-Date).AddMinutes(${{ github.event.inputs.rdp_duration }})
-          while ((Get-Date) -lt $endTime) {
-            Write-Host "当前时间：$(Get-Date) | 剩余时长：$([math]::Round(($endTime - (Get-Date)).TotalMinutes)) 分钟"
-            Start-Sleep -Seconds 60
+          Invoke-WebRequest -Uri https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath .
+          ./ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+
+      - name: Start ngrok tunnel (3389)
+        run: |
+          # 后台挂起 ngrok，把 3389 映射出去
+          Start-Process -NoNewWindow -FilePath "./ngrok" -ArgumentList "tcp 3389 --region=${{ env.NGROK_REGION }} --log=stdout"
+
+      - name: Wait 10 s 并打印连接信息
+        run: |
+          Start-Sleep -Seconds 10
+          $tunnel = (Invoke-WebRequest -Uri http://localhost:4040/api/tunnels).Content | ConvertFrom-Json
+          $hostPort = $tunnel.tunnels[0].public_url -replace "tcp://"
+          Write-Host "============================"
+          Write-Host "远程桌面地址：$hostPort"
+          Write-Host "用户名：${{ env.USERNAME }}"
+          Write-Host "密码  ：${{ env.PASSWORD }}"
+          Write-Host "============================"
+
+      - name: Keep alive (最多 120 min)
+        timeout-minutes: 115
+        run: |
+          # 每 30 s 打印一次心跳，防止 Actions 被判定掉线
+          for ($i=1; $i -le 230; $i++) {
+            Write-Host "[$(Get-Date -Format HH:mm:ss)] 远程桌面仍在运行，剩余 $((120-$i*0.5)) min …"
+            Start-Sleep -Seconds 30
           }
-          Write-Host "会话已到期" -ForegroundColor Red
+
+      - name: Logoff & cleanup
+        if: always()
+        run: |
+          # 强制注销所有远程会话，关闭 ngrok
+          qwinsta | ForEach-Object { $id = ($_ -split "\s+")[2]; if ($id -match "\d") { rwinsta $id } }
+          taskkill /f /im ngrok.exe 2>$null || true
