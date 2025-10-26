@@ -1,75 +1,53 @@
-name: Windows Cloud PC (RDP + ngrok)
-
+name: 部署 AI 服务到云服务器
+# 触发条件：推送到 main 分支时执行
 on:
-  workflow_dispatch:          # 手动触发
-  # push:                     # 如需要 push 触发，可取消注释
-  #   branches: [ main ]
-
-env:
-  USERNAME: actions           # 登录账号
-  PASSWORD: Actions@2025      # 登录密码（建议改成自己的）
-  NGROK_REGION: us            # ngrok 区域，可选 us / eu / ap 等
+  push:
+    branches: [ "main" ]
 
 jobs:
-  cloud:
-    runs-on: windows-latest
-    timeout-minutes: 120      # 最大 2 h（GitHub 限制）
+  deploy-ai-service:
+    runs-on: ubuntu-latest # 运行环境：Ubuntu 最新版
     steps:
-      - name: Checkout
+      # 1. 拉取 GitHub 仓库代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Enable RDP & create user
+      # 2. 配置 Python 环境（AI 项目常用）
+      - name: 设置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10" # 匹配你的 AI 项目 Python 版本
+
+      # 3. 安装依赖（需提前在项目根目录创建 requirements.txt）
+      - name: 安装依赖包
         run: |
-          # 创建本地账户
-          net user ${{ env.USERNAME }} ${{ env.PASSWORD }} /add /y
-          net localgroup "Administrators" ${{ env.USERNAME }} /add
-          net localgroup "Remote Desktop Users" ${{ env.USERNAME }} /add
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt # 需包含 torch/transformers/fastapi 等 AI 库
 
-          # 启用远程桌面
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          netsh advfirewall set allprofiles state off   # 完全关闭防火墙，省得端口被拦
+      # 4. （可选）缓存 AI 模型（避免每次下载大模型，加速部署）
+      - name: 缓存 HuggingFace 模型
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/huggingface # 模型默认缓存路径
+          key: ${{ runner.os }}-huggingface-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-huggingface-
 
-          # 高性能电源方案，防止息屏
-          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-          powercfg -change -monitor-timeout-ac 0
-          powercfg -change -standby-timeout-ac 0
-
-      - name: Install ngrok
-        run: |
-          Invoke-WebRequest -Uri https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-          Expand-Archive ngrok.zip -DestinationPath .
-          ./ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-
-      - name: Start ngrok tunnel (3389)
-        run: |
-          # 后台挂起 ngrok，把 3389 映射出去
-          Start-Process -NoNewWindow -FilePath "./ngrok" -ArgumentList "tcp 3389 --region=${{ env.NGROK_REGION }} --log=stdout"
-
-      - name: Wait 10 s 并打印连接信息
-        run: |
-          Start-Sleep -Seconds 10
-          $tunnel = (Invoke-WebRequest -Uri http://localhost:4040/api/tunnels).Content | ConvertFrom-Json
-          $hostPort = $tunnel.tunnels[0].public_url -replace "tcp://"
-          Write-Host "============================"
-          Write-Host "远程桌面地址：$hostPort"
-          Write-Host "用户名：${{ env.USERNAME }}"
-          Write-Host "密码  ：${{ env.PASSWORD }}"
-          Write-Host "============================"
-
-      - name: Keep alive (最多 120 min)
-        timeout-minutes: 115
-        run: |
-          # 每 30 s 打印一次心跳，防止 Actions 被判定掉线
-          for ($i=1; $i -le 230; $i++) {
-            Write-Host "[$(Get-Date -Format HH:mm:ss)] 远程桌面仍在运行，剩余 $((120-$i*0.5)) min …"
-            Start-Sleep -Seconds 30
-          }
-
-      - name: Logoff & cleanup
-        if: always()
-        run: |
-          # 强制注销所有远程会话，关闭 ngrok
-          qwinsta | ForEach-Object { $id = ($_ -split "\s+")[2]; if ($id -match "\d") { rwinsta $id } }
-          taskkill /f /im ngrok.exe 2>$null || true
+      # 5. 部署到云服务器（通过 SSH 连接，需提前配置 Secrets）
+      - name: SSH 连接并启动 AI 服务
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }} # 服务器 IP（在 GitHub 仓库 -> Settings -> Secrets 配置）
+          username: ${{ secrets.SERVER_USER }} # 服务器用户名
+          key: ${{ secrets.SSH_PRIVATE_KEY }} # SSH 私钥
+          script: |
+            # 进入服务器项目目录
+            cd /path/to/your/ai/project
+            # 拉取最新代码（若服务器已克隆仓库）
+            git pull
+            # 安装依赖（与步骤 3 一致）
+            pip install -r requirements.txt
+            # 停止旧服务（避免端口占用）
+            pkill -f "uvicorn main:app" || true
+            # 后台启动 AI 服务（以 FastAPI 的 uvicorn 为例）
+            nohup uvicorn main:app --host 0.0.0.0 --port 8000 &
