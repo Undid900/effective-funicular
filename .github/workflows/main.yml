@@ -1,53 +1,153 @@
-name: 部署 AI 服务到云服务器
-# 触发条件：推送到 main 分支时执行
+name: 🖥️ Windows Cloud PC Deployment
+
 on:
-  push:
-    branches: [ "main" ]
+  workflow_dispatch:  # 允许手动触发
+  schedule:
+    - cron: '0 9 * * 1-5'  # 工作日早上9点自动启动（可选）
+
+env:
+  RDP_PORT: 3389
+  WEB_PORT: 8080
 
 jobs:
-  deploy-ai-service:
-    runs-on: ubuntu-latest # 运行环境：Ubuntu 最新版
+  deploy-windows-pc:
+    name: 🚀 部署 Windows 云电脑
+    runs-on: windows-latest  # 使用 GitHub 提供的 Windows 运行器
+    
     steps:
-      # 1. 拉取 GitHub 仓库代码
-      - name: 检出代码
-        uses: actions/checkout@v4
+    - name: 🏁 检查代码
+      uses: actions/checkout@v4
 
-      # 2. 配置 Python 环境（AI 项目常用）
-      - name: 设置 Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10" # 匹配你的 AI 项目 Python 版本
+    - name: 🔧 配置 Windows 远程桌面 (RDP)
+      run: |
+        # 启用远程桌面服务
+        Enable-NetFirewallRule -DisplayGroup "远程桌面"
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1
+        
+        # 设置 RDP 密码
+        $securePassword = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
+        $username = "runneradmin"
+        Set-LocalUser -Name $username -Password $securePassword
+        
+        Write-Output "✅ RDP 服务已启用"
 
-      # 3. 安装依赖（需提前在项目根目录创建 requirements.txt）
-      - name: 安装依赖包
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt # 需包含 torch/transformers/fastapi 等 AI 库
+    - name: ⬇️ 下载并安装 Cloudflared
+      run: |
+        $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+        Invoke-WebRequest -Uri $cloudflaredUrl -OutFile "cloudflared.exe"
+        Write-Output "✅ Cloudflared 下载完成"
 
-      # 4. （可选）缓存 AI 模型（避免每次下载大模型，加速部署）
-      - name: 缓存 HuggingFace 模型
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/huggingface # 模型默认缓存路径
-          key: ${{ runner.os }}-huggingface-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-huggingface-
+    - name: 📦 安装基础开发工具
+      run: |
+        # 安装 Chocolatey（Windows 包管理器）
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        
+        # 安装常用开发工具
+        choco install git -y
+        choco install vscode -y
+        choco install nodejs -y
+        choco install python -y
+        choco install googlechrome -y
+        
+        Write-Output "✅ 基础开发工具安装完成"
 
-      # 5. 部署到云服务器（通过 SSH 连接，需提前配置 Secrets）
-      - name: SSH 连接并启动 AI 服务
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_IP }} # 服务器 IP（在 GitHub 仓库 -> Settings -> Secrets 配置）
-          username: ${{ secrets.SERVER_USER }} # 服务器用户名
-          key: ${{ secrets.SSH_PRIVATE_KEY }} # SSH 私钥
-          script: |
-            # 进入服务器项目目录
-            cd /path/to/your/ai/project
-            # 拉取最新代码（若服务器已克隆仓库）
-            git pull
-            # 安装依赖（与步骤 3 一致）
-            pip install -r requirements.txt
-            # 停止旧服务（避免端口占用）
-            pkill -f "uvicorn main:app" || true
-            # 后台启动 AI 服务（以 FastAPI 的 uvicorn 为例）
-            nohup uvicorn main:app --host 0.0.0.0 --port 8000 &
+    - name: 🌐 启动 Cloudflare Tunnel
+      run: |
+        # 创建配置文件
+        $configContent = @"
+tunnel: github-actions-windows
+credentials-file: .cloudflared/credentials.json
+ingress:
+  - hostname: rdp-${{ github.run_id }}.yourdomain.com  # 替换为你的域名
+    service: rdp://localhost:${{ env.RDP_PORT }}
+  - hostname: web-${{ github.run_id }}.yourdomain.com  # 可选：Web 服务
+    service: http://localhost:${{ env.WEB_PORT }}
+  - service: http_status:404
+"@
+        
+        New-Item -ItemType Directory -Path ".cloudflared" -Force
+        $configContent | Out-File -FilePath ".cloudflared/config.yml" -Encoding UTF8
+        
+        # 启动隧道（后台运行）
+        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel run" -NoNewWindow
+        
+        Write-Output "🌐 Cloudflare Tunnel 启动成功"
+
+    - name: 🔄 启动简易 Web 服务（可选）
+      run: |
+        # 创建简单的状态页面
+        $htmlContent = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Windows Cloud PC - Status</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .status { padding: 20px; background: #f0f0f0; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🖥️ Windows Cloud PC 状态</h1>
+    <div class="status">
+        <p><strong>运行ID:</strong> ${{ github.run_id }}</p>
+        <p><strong>启动时间:</strong> $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
+        <p><strong>RDP 地址:</strong> rdp-${{ github.run_id }}.yourdomain.com</p>
+        <p><strong>用户名:</strong> runneradmin</p>
+    </div>
+</body>
+</html>
+"@
+        $htmlContent | Out-File -FilePath "status.html" -Encoding UTF8
+        
+        # 启动简易 HTTP 服务器
+        Start-Job -ScriptBlock {
+            cd $args[0]
+            python -m http.server 8080
+        } -ArgumentList $PWD.Path
+        
+        Write-Output "🌐 Web 状态页面已启动"
+
+    - name: ⏰ 设置自动关闭（6小时）
+      run: |
+        # GitHub Actions 最大运行6小时，这里设置5小时50分钟后自动清理
+        $shutdownScript = {
+            Start-Sleep 21000  # 5小时50分钟
+            Write-Output "⏰ 运行时间即将结束，自动关闭中..."
+            exit 0
+        }
+        Start-Job -ScriptBlock $shutdownScript
+        
+        Write-Output "⏰ 自动关闭计时器已设置"
+
+    - name: 📊 显示连接信息
+      run: |
+        Write-Output "🎉 Windows 云电脑部署完成！"
+        Write-Output "========================================"
+        Write-Output "🔗 RDP 连接信息："
+        Write-Output "   地址: rdp-${{ github.run_id }}.yourdomain.com"
+        Write-Output "   用户名: runneradmin"
+        Write-Output "   密码: ***（查看 GitHub Secrets）"
+        Write-Output ""
+        Write-Output "🌐 状态页面："
+        Write-Output "   https://web-${{ github.run_id }}.yourdomain.com"
+        Write-Output ""
+        Write-Output "⏰ 自动关闭时间: 6小时后"
+        Write-Output "========================================"
+
+    - name: 🕐 保持运行（最大6小时）
+      run: |
+        # 保持运行，直到超时或手动取消
+        $startTime = Get-Date
+        while ($true) {
+            $elapsed = (Get-Date) - $startTime
+            $remaining = (6 * 3600) - $elapsed.TotalSeconds
+            
+            if ($remaining -le 0) {
+                Write-Output "⏰ 运行时间结束"
+                break
+            }
+            
+            $hours = [math]::Floor
