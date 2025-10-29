@@ -1,153 +1,103 @@
-name: 🖥️ Windows Cloud PC Deployment
-
+name: Deploy Windows Cloud PC with RDP
 on:
-  workflow_dispatch:  # 允许手动触发
-  schedule:
-    - cron: '0 9 * * 1-5'  # 工作日早上9点自动启动（可选）
+  workflow_dispatch:
+    inputs:
+      vm-size:
+        description: 'VM Size'
+        required: true
+        default: 'Standard_D2s_v3'
+        type: choice
+        options:
+        - Standard_B2s
+        - Standard_D2s_v3
+        - Standard_D4s_v3
 
 env:
-  RDP_PORT: 3389
-  WEB_PORT: 8080
+  RESOURCE_GROUP: 'github-windows-pc'
+  VM_NAME: 'github-win-pc'
+  LOCATION: 'eastus'
 
 jobs:
-  deploy-windows-pc:
-    name: 🚀 部署 Windows 云电脑
-    runs-on: windows-latest  # 使用 GitHub 提供的 Windows 运行器
-    
+  deploy-windows-vm:
+    runs-on: ubuntu-latest
     steps:
-    - name: 🏁 检查代码
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: 🔧 配置 Windows 远程桌面 (RDP)
-      run: |
-        # 启用远程桌面服务
-        Enable-NetFirewallRule -DisplayGroup "远程桌面"
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1
-        
-        # 设置 RDP 密码
-        $securePassword = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
-        $username = "runneradmin"
-        Set-LocalUser -Name $username -Password $securePassword
-        
-        Write-Output "✅ RDP 服务已启用"
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: ⬇️ 下载并安装 Cloudflared
+    - name: Create Resource Group
       run: |
-        $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-        Invoke-WebRequest -Uri $cloudflaredUrl -OutFile "cloudflared.exe"
-        Write-Output "✅ Cloudflared 下载完成"
+        az group create --name $RESOURCE_GROUP --location $LOCATION
 
-    - name: 📦 安装基础开发工具
+    - name: Deploy Windows VM
       run: |
-        # 安装 Chocolatey（Windows 包管理器）
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        
-        # 安装常用开发工具
-        choco install git -y
-        choco install vscode -y
-        choco install nodejs -y
-        choco install python -y
-        choco install googlechrome -y
-        
-        Write-Output "✅ 基础开发工具安装完成"
+        az vm create \
+          --resource-group $RESOURCE_GROUP \
+          --name $VM_NAME \
+          --image MicrosoftWindowsDesktop:Windows-11:win11-23h2-pro:latest \
+          --size ${{ github.event.inputs.vm-size }} \
+          --admin-username githubuser \
+          --admin-password "${{ secrets.WINDOWS_PASSWORD }}" \
+          --public-ip-address-allocation static \
+          --public-ip-sku Standard \
+          --nsg-rule RDP
 
-    - name: 🌐 启动 Cloudflare Tunnel
+    - name: Get Public IP
+      id: ip
       run: |
-        # 创建配置文件
-        $configContent = @"
-tunnel: github-actions-windows
-credentials-file: .cloudflared/credentials.json
-ingress:
-  - hostname: rdp-${{ github.run_id }}.yourdomain.com  # 替换为你的域名
-    service: rdp://localhost:${{ env.RDP_PORT }}
-  - hostname: web-${{ github.run_id }}.yourdomain.com  # 可选：Web 服务
-    service: http://localhost:${{ env.WEB_PORT }}
-  - service: http_status:404
-"@
-        
-        New-Item -ItemType Directory -Path ".cloudflared" -Force
-        $configContent | Out-File -FilePath ".cloudflared/config.yml" -Encoding UTF8
-        
-        # 启动隧道（后台运行）
-        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel run" -NoNewWindow
-        
-        Write-Output "🌐 Cloudflare Tunnel 启动成功"
+        PUBLIC_IP=$(az vm show \
+          --resource-group $RESOURCE_GROUP \
+          --name $VM_NAME \
+          --show-details \
+          --query publicIps \
+          --output tsv)
+        echo "::add-mask::$PUBLIC_IP"
+        echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
 
-    - name: 🔄 启动简易 Web 服务（可选）
+    - name: Configure RDP and Open Ports
       run: |
-        # 创建简单的状态页面
-        $htmlContent = @"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Windows Cloud PC - Status</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        .status { padding: 20px; background: #f0f0f0; border-radius: 5px; }
-    </style>
-</head>
-<body>
-    <h1>🖥️ Windows Cloud PC 状态</h1>
-    <div class="status">
-        <p><strong>运行ID:</strong> ${{ github.run_id }}</p>
-        <p><strong>启动时间:</strong> $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
-        <p><strong>RDP 地址:</strong> rdp-${{ github.run_id }}.yourdomain.com</p>
-        <p><strong>用户名:</strong> runneradmin</p>
-    </div>
-</body>
-</html>
-"@
-        $htmlContent | Out-File -FilePath "status.html" -Encoding UTF8
-        
-        # 启动简易 HTTP 服务器
-        Start-Job -ScriptBlock {
-            cd $args[0]
-            python -m http.server 8080
-        } -ArgumentList $PWD.Path
-        
-        Write-Output "🌐 Web 状态页面已启动"
+        # 开启 RDP 端口
+        az vm open-port \
+          --resource-group $RESOURCE_GROUP \
+          --name $VM_NAME \
+          --port 3389 \
+          --priority 100
 
-    - name: ⏰ 设置自动关闭（6小时）
+    - name: Install Chrome via Azure Run Command
       run: |
-        # GitHub Actions 最大运行6小时，这里设置5小时50分钟后自动清理
-        $shutdownScript = {
-            Start-Sleep 21000  # 5小时50分钟
-            Write-Output "⏰ 运行时间即将结束，自动关闭中..."
-            exit 0
-        }
-        Start-Job -ScriptBlock $shutdownScript
-        
-        Write-Output "⏰ 自动关闭计时器已设置"
+        az vm run-command invoke \
+          --resource-group $RESOURCE_GROUP \
+          --name $VM_NAME \
+          --command-id RunPowerShellScript \
+          --scripts @scripts/install-chrome.ps1
 
-    - name: 📊 显示连接信息
+    - name: Setup RDP Configuration
       run: |
-        Write-Output "🎉 Windows 云电脑部署完成！"
-        Write-Output "========================================"
-        Write-Output "🔗 RDP 连接信息："
-        Write-Output "   地址: rdp-${{ github.run_id }}.yourdomain.com"
-        Write-Output "   用户名: runneradmin"
-        Write-Output "   密码: ***（查看 GitHub Secrets）"
-        Write-Output ""
-        Write-Output "🌐 状态页面："
-        Write-Output "   https://web-${{ github.run_id }}.yourdomain.com"
-        Write-Output ""
-        Write-Output "⏰ 自动关闭时间: 6小时后"
-        Write-Output "========================================"
+        az vm run-command invoke \
+          --resource-group $RESOURCE_GROUP \
+          --name $VM_NAME \
+          --command-id RunPowerShellScript \
+          --scripts @scripts/configure-rdp.ps1
 
-    - name: 🕐 保持运行（最大6小时）
+    - name: Display Connection Info
       run: |
-        # 保持运行，直到超时或手动取消
-        $startTime = Get-Date
-        while ($true) {
-            $elapsed = (Get-Date) - $startTime
-            $remaining = (6 * 3600) - $elapsed.TotalSeconds
-            
-            if ($remaining -le 0) {
-                Write-Output "⏰ 运行时间结束"
-                break
-            }
-            
-            $hours = [math]::Floor
+        echo "🎯 Windows Cloud PC 部署完成!"
+        echo "📡 公网 IP: ${{ steps.ip.outputs.public_ip }}"
+        echo "👤 用户名: githubuser"
+        echo "🔑 密码: *** (查看 GitHub Secrets)"
+        echo "🖥️ 使用 Remote Desktop Connection 连接"
+        echo "mstsc /v:${{ steps.ip.outputs.public_ip }}"
+
+  remote-connection-test:
+    needs: deploy-windows-vm
+    runs-on: windows-latest
+    steps:
+    - name: Test RDP Connection
+      run: |
+        # 测试端口连通性
+        $ip = "${{ needs.deploy-windows-vm.outputs.public_ip }}"
+        Test-NetConnection -ComputerName $ip -Port 3389
